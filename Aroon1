@@ -1,0 +1,127 @@
+# Import required libraries if not already imported
+from ta.trend import AroonIndicator
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Funktion zum Berechnen der Aroon-Indikatoren
+def calculate_aroon(df, period):
+    df = df.copy()
+    # NaN-Werte handhaben, indem Rolling-Fenster korrekt verwendet wird
+    df['Aroon_Up'] = df['High'].rolling(period + 1, min_periods=1).apply(lambda x: float(np.argmax(x)) / period * 100)
+    df['Aroon_Down'] = df['Low'].rolling(period + 1, min_periods=1).apply(lambda x: float(np.argmin(x)) / period * 100)
+    return df
+
+# Backtest-Strategie
+def backtest_strategy(df, period, buy_threshold, sell_threshold, initial_capital):
+    signals = df.copy()
+    
+    # Convert string data to float
+    signals['High'] = pd.to_numeric(signals['High'], errors='coerce')
+    signals['Low'] = pd.to_numeric(signals['Low'], errors='coerce')
+    signals['Close'] = pd.to_numeric(signals['Close'], errors='coerce')
+    
+    # Calculate Aroon indicators using ta library
+    aroon_indicator = AroonIndicator(high=signals['High'].values, low=signals['Low'].values, window=period)
+    signals['Aroon_Up'] = aroon_indicator.aroon_up()
+    signals['Aroon_Down'] = aroon_indicator.aroon_down() 
+
+    # Initialize position and portfolio columns
+    signals['Position'] = 0
+    signals['Portfolio_Value'] = initial_capital
+    signals['Holdings'] = 0
+    signals['Cash'] = initial_capital
+    
+    # Generate trading signals
+    # Replace direct comparisons with boolean masks
+    buy_signals = (signals['Aroon_Up'] > buy_threshold) & (signals['Aroon_Down'] < sell_threshold)
+    sell_signals = (signals['Aroon_Down'] > buy_threshold) & (signals['Aroon_Up'] < sell_threshold)
+    
+    position = 0
+    winning_trades = 0
+    losing_trades = 0
+    entry_price = 0
+    
+    # Loop through the signals to execute trades
+    for i in range(1, len(signals)):
+        if buy_signals.iloc[i] and position == 0:  # Buy signal
+            position = 1
+            entry_price = signals['Close'].iloc[i]
+            shares = signals['Cash'].iloc[i-1] / signals['Close'].iloc[i]
+            signals.loc[signals.index[i], 'Holdings'] = shares * signals['Close'].iloc[i]
+            signals.loc[signals.index[i], 'Cash'] = signals['Cash'].iloc[i-1] - shares * signals['Close'].iloc[i]
+            signals.loc[signals.index[i], 'Position'] = 1
+            
+        elif sell_signals.iloc[i] and position == 1:  # Sell signal
+            position = 0
+            if signals['Close'].iloc[i] > entry_price:
+                winning_trades += 1
+            else:
+                losing_trades += 1
+            shares = signals['Holdings'].iloc[i-1] / signals['Close'].iloc[i-1]
+            signals.loc[signals.index[i], 'Holdings'] = 0
+            signals.loc[signals.index[i], 'Cash'] = signals['Cash'].iloc[i-1] + shares * signals['Close'].iloc[i]
+            signals.loc[signals.index[i], 'Position'] = 0
+        else:
+            # Hold position
+            signals.loc[signals.index[i], 'Holdings'] = signals['Holdings'].iloc[i-1]
+            signals.loc[signals.index[i], 'Cash'] = signals['Cash'].iloc[i-1]
+            signals.loc[signals.index[i], 'Position'] = signals['Position'].iloc[i-1]
+            
+    # Calculate portfolio value and returns
+    signals['Portfolio_Value'] = signals['Holdings'] + signals['Cash']
+    signals['Returns'] = signals['Portfolio_Value'].pct_change()
+    
+    # Calculate drawdown
+    signals['Peak'] = signals['Portfolio_Value'].expanding().max()
+    signals['Drawdown'] = (signals['Portfolio_Value'] - signals['Peak']) / signals['Peak']
+    
+    total_trades = winning_trades + losing_trades
+    total_return = (signals['Portfolio_Value'].iloc[-1] / initial_capital) - 1
+    annual_return = total_return / (len(signals) / 252)
+    sharpe_ratio = np.sqrt(252) * signals['Returns'].mean() / signals['Returns'].std() if signals['Returns'].std() != 0 else 0
+    max_drawdown = signals['Drawdown'].min()
+    
+    # Create the plot
+    plt.figure(figsize=(12,8))
+    plt.plot(signals.index, signals['Portfolio_Value'], label='Strategy Portfolio Value')
+    plt.plot(signals.index, initial_capital * (1 + signals['Close'].pct_change().cumsum()), 
+             label='Buy and Hold Portfolio Value')
+    plt.title('Backtest Results - Aroon Strategy')
+    plt.xlabel('Date')
+    plt.ylabel('Portfolio Value')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+    # Print performance metrics
+    print(f"\nPerformance Metrics:")
+    print(f"Total Return: {total_return:.2%}")
+    print(f"Annual Return: {annual_return:.2%}")
+    print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
+    print(f"\nTrade Statistics:")
+    print(f"Total Trades: {total_trades}")
+    print(f"Winning Trades: {winning_trades}")
+    print(f"Losing Trades: {losing_trades}")
+    if total_trades > 0:
+        print(f"Win Rate: {winning_trades/total_trades:.2%}")
+    print(f"Maximum Drawdown: {max_drawdown:.2%}")
+    
+    return signals
+
+def get_crypto_data(symbol='BTC-EUR', start='2020-01-01', end='2025-03-12'):
+    try:
+        df = yf.download(symbol, start=start, end=end, interval='1d')
+        print(f"Successfully downloaded {symbol} data")
+        return df
+    except Exception as e:
+        print(f"Error downloading data: {e}")
+        return None
+
+# Get data and run backtest
+    df = get_crypto_data()
+    if df is not None:
+        results = backtest_strategy(df, period=14, buy_threshold=70, sell_threshold=30, initial_capital=50000)
+    
+    
